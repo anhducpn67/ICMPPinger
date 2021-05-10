@@ -6,6 +6,8 @@ import time
 from socket import *
 
 ICMP_ECHO_REQUEST = 8
+numberPacketSent = 4  # Number client pings to server
+serverName = "google.com"
 
 
 def checksum(str_):
@@ -44,11 +46,16 @@ def receiveOnePing(mySocket, ID, timeOut, destAddr):
         recPacket, addr = mySocket.recvfrom(1024)
 
         # Fetch the ICMP header from the IP packet
-        icmpHeader = recPacket[20:28]
+        beginICMPHeaderByte = 20  # The ICMP header starts after bit 160 (byte 20) of the IP header
+        endICMPHeaderByte = 28  # Length of ICMP header = (8 + 8 + 16 + 16 + 16) bits = 8 bytes
+        # => End of ICMP header after byte = 20 + 8 = 28
+        icmpHeader = recPacket[beginICMPHeaderByte:endICMPHeaderByte]
         ICMPType, ICMPCode, ICMPCheckSum, ICMP_ID, ICMPSequence = struct.unpack("bbHHh", icmpHeader)
         if ICMPType == 0 and ICMPCode == 0 and ICMP_ID == ID:
-            timeSent = struct.unpack("d", recPacket[28:28 + 8])[0]
-            return timeReceived - timeSent
+            bytesInDouble = struct.calcsize("d")  # Calc size of double number in bytes
+            # Data starts from end of ICMP header byte
+            timeSent = struct.unpack("d", recPacket[endICMPHeaderByte:endICMPHeaderByte + bytesInDouble])[0]
+            return timeReceived - timeSent  # Return delay (RTT)
 
         timeLeft = timeLeft - howLongInSelect
         if timeLeft <= 0:
@@ -57,7 +64,6 @@ def receiveOnePing(mySocket, ID, timeOut, destAddr):
 
 def sendOnePing(mySocket, destAddr, ID):
     # Header is type (8), code (8), checksum (16), id (16), sequence (16)
-
     myChecksum = 0
     # Make a dummy header with a 0 checksum.
     # struct -- Interpret strings as packed binary data
@@ -83,9 +89,7 @@ def sendOnePing(mySocket, destAddr, ID):
 def doOnePing(destAddr, timeOut):
     icmp = getprotobyname("icmp")
     # SOCK_RAW is a powerful socket type. For more details: http://sockraw.org/papers/sock_raw
-
     mySocket = socket(AF_INET, SOCK_RAW, icmp)
-
     myID = os.getpid() & 0xFFFF  # Return the current process i
     sendOnePing(mySocket, destAddr, myID)
     delay = receiveOnePing(mySocket, myID, timeOut, destAddr)
@@ -97,15 +101,46 @@ def ping(host, timeOut=1):
     # timeout=1 means: If one second goes by without a reply from the server,
     # the client assumes that either the client's ping or the server's pong is lost
     dest = gethostbyname(host)
-    print("Pinging " + dest + " using Python:")
+    # Initialize variables for report
+    numberPacketLost = 0
+    numberPacketRecv = 0
+    minimumRTT = 99999999
+    maximumRTT = 0
+    averageRTT = 0
+    packetLossRate = 0  # In percentage
+
+    print("Pinging {} ({}) using Python:".format(serverName, dest))
     print("")
     # Send ping requests to a server separated by approximately one second
-    while 1:
+    for i in range(0, numberPacketSent):
         delay = doOnePing(dest, timeOut)
-        print(delay)
+        if delay == "Request timed out.":  # Packet loss
+            numberPacketLost += 1
+            print(delay)
+        else:  # Packet received successfully
+            numberPacketRecv += 1
+            delay = round(delay * 1000, 2)  # Convert delay from second to mili-second and round to 2 decimals
+            maximumRTT = max(maximumRTT, delay)
+            minimumRTT = min(minimumRTT, delay)
+            averageRTT = averageRTT + delay
+            print("Reply from {}:".format(dest), end="\t")
+            print("time = {} ms".format(delay))
         time.sleep(1)  # one second
-    return delay
+
+    packetLossRate = round((numberPacketLost / numberPacketSent) * 100, 2)  # Calc packet lost rate
+    averageRTT = round(averageRTT / numberPacketSent, 2)
+    # Report for packets
+    print("\n--- {} ping statistics ---".format(serverName))
+    print("\t" + "Send = {}".format(numberPacketSent), end=", ")
+    print("Received = {}".format(numberPacketRecv), end=", ")
+    print("Lost = {}".format(numberPacketLost), end=" ")
+    print("({}% lost)".format(packetLossRate))
+
+    # Report for RTT
+    print("Approximate round trip times in milli-seconds:")
+    print("\tMinimum = {} ms".format(minimumRTT), end=", ")
+    print("Maximum = {} ms".format(maximumRTT), end=", ")
+    print("Average = {} ms".format(averageRTT))
 
 
-ping("google.com")
-# print(htons(1))
+ping(serverName)
